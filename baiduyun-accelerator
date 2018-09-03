@@ -1,0 +1,184 @@
+#!/bin/bash
+#
+# Copyright (C) 2018 smallmuou <smallmuou@163.com>
+# 
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is furnished
+# to do so, subject to the following conditions:
+# 
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+# 
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+spushd() {
+     pushd "$1" 2>&1> /dev/null
+}
+
+spopd() {
+     popd 2>&1> /dev/null
+}
+
+info() {
+     local green="\033[1;32m"
+     local normal="\033[0m"
+     echo -e "[${green}INFO${normal}] $1"
+}
+
+cmdcheck() {
+    command -v $1>/dev/null 2>&1 || { error >&2 "Please install command $1 first."; exit 1; }   
+}
+
+error() {
+     local red="\033[1;31m"
+     local normal="\033[0m"
+     echo -e "[${red}ERROR${normal}] $1"
+}
+
+warn() {
+     local yellow="\033[1;33m"
+     local normal="\033[0m"
+     echo -e "[${yellow}INFO${normal}] $1"
+}
+
+yesno() {
+    while true;do
+    read -p "$1 (y/n)" yn
+    case $yn in
+        [Yy]) $2;break;;
+        [Nn]) exit;;
+        *) echo 'please enter y or n.'
+    esac
+done
+}
+
+curdir() {
+    if [ ${0:0:1} = '/' ] || [ ${0:0:1} = '~' ]; then
+        echo "$(dirname $0)"
+    elif [ -L $0 ];then
+        name=`readlink $0`
+        echo $(dirname $name)
+    else
+        echo "`pwd`/$(dirname $0)"
+    fi
+}
+
+myos() {
+    echo `uname|tr "[:upper:]" "[:lower:]"`
+}
+
+#########################################
+###           GROBLE DEFINE           ###
+#########################################
+
+VERSION=1.0.0
+AUTHOR=smallmuou
+
+#########################################
+###             ARG PARSER            ###
+#########################################
+
+usage() {
+prog=`basename $0`
+cat << EOF
+$prog version $VERSION by $AUTHOR
+
+USAGE: $prog [OPTIONS] redirection-url [ split-number]
+
+DESCRIPTION:
+    The script use to speed up baiduyun download.
+
+    redirection-url     the redirection url, you can found it by pre-download.
+    split-number        the split number of the file. default 10
+
+OPTIONS:
+    -h      Show this help message and exit
+
+
+EOF
+exit 1
+}
+
+while getopts 'h' arg; do
+    case $arg in
+        h)
+            usage
+            ;;
+        ?)
+            # OPTARG
+            usage
+            ;;
+    esac
+done
+
+shift $(($OPTIND - 1))
+
+[ $# -eq 0 ] && usage
+
+#########################################
+###            MAIN ENTRY             ###
+#########################################
+
+url=$1
+count=10
+[ $# -ge 2 ] && count=$2
+
+ret=`curl -s -I "$url"`
+size=`echo "$ret"|awk '/x-bs-file-size/{print $2}'|tr -d '\r'`
+if [ -z $size ];then
+    error 'The url is incorrect or expired.'
+    exit -1
+fi
+filename=`echo "$ret"|awk -F= '/filename/{print $2}'|tr -d '\r'`
+filename=`python -c "import sys, urllib as ul; print ul.unquote_plus(sys.argv[1])" $filename`
+tmpname_prefix=".`date +%s`"
+
+block_size=`expr $size / $count`
+let count++
+pids=()
+
+for (( i = 0; i < $count; i++ )); do
+    let start=i*$block_size
+    let end=start+$block_size-1
+    curl -s -H "Range: bytes=$start-$end" "$url" > $tmpname_prefix-$i.tmp &
+    pids[i]=$!
+done
+
+trap terminate INT
+
+terminate() {
+    for (( i = 0; i < $count; i++ )); do
+        kill -9 ${pids[i]} > /dev/null 2>&1
+        rm -rf $tmpname_prefix-$i.tmp
+    done
+    exit 0
+}
+
+downloaded_size=0
+last_downloaded_size=$downloaded_size
+while (( $downloaded_size < $size )); 
+do
+    downloaded_size=`ls -l $tmpname_prefix-*.tmp|awk '{print $5}'|awk 'BEGIN{sum=0};{sum+=$0};END{print sum}'`
+    echo -e "Progress: `expr $downloaded_size \* 100 / $size`% \t `expr \( $downloaded_size - $last_downloaded_size \) / 1024`KB/s"
+    last_downloaded_size=$downloaded_size
+    sleep 1
+done
+
+# merge
+for (( i = 0; i < $count; i++ )); do
+    cat $tmpname_prefix-$i.tmp >> "$filename"
+    rm -rf $tmpname_prefix-$i.tmp
+done
+
+
+echo "Completed. Save to $filename"
+
