@@ -158,7 +158,7 @@ trap terminate INT
 terminate() {
     for (( i = 0; i < $count; i++ )); do
         kill -9 ${pids[i]} > /dev/null 2>&1
-        rm -rf $tmpname_prefix-$i.tmp
+        /bin/rm -rf $tmpname_prefix-$i.tmp
     done
     exit 0
 }
@@ -176,7 +176,7 @@ done
 # merge
 for (( i = 0; i < $count; i++ )); do
     cat $tmpname_prefix-$i.tmp >> "$filename"
-    rm -rf $tmpname_prefix-$i.tmp
+    /bin/rm -rf $tmpname_prefix-$i.tmp
 done
 
 
